@@ -1,12 +1,35 @@
-# Extended base image for bot containers with build tools and utilities
-# Build: docker compose build botenv
+# Extended bot container: Ubuntu Noble base with OpenClaw + dev tools
+# Build: docker compose --profile build build botenv
 # Usage: Automatically used by botmaker when spawning bot containers
 
+# Stage 1: Source OpenClaw app files and Node.js runtime from upstream
 ARG BASE_IMAGE=ghcr.io/openclaw/openclaw:latest
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS openclaw-source
 
-# Switch to root for package installation
-USER root
+# Stage 2: Ubuntu Noble base with Node.js + OpenClaw + dev tools
+FROM ubuntu:noble
+
+# Create node user (UID 1000) to match OpenClaw expectations
+# Ubuntu Noble ships with ubuntu:1000 — remove it first, then create node:1000
+RUN userdel --remove ubuntu 2>/dev/null; groupdel ubuntu 2>/dev/null; \
+    groupadd --gid 1000 node \
+ && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
+
+# Copy Node.js runtime from OpenClaw image
+COPY --from=openclaw-source /usr/local/bin/node /usr/local/bin/
+COPY --from=openclaw-source /usr/local/bin/docker-entrypoint.sh /usr/local/bin/
+COPY --from=openclaw-source /usr/local/include/node /usr/local/include/node
+COPY --from=openclaw-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+# Symlink npm/npx/corepack (they're wrappers into lib/node_modules)
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+ && corepack enable
+
+# Copy OpenClaw application
+COPY --from=openclaw-source --chown=node:node /app /app
+WORKDIR /app
 
 # Install build tools, languages, and utilities in single layer for cache efficiency
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,13 +50,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libncurses-dev \
     libpcre2-dev \
     libprotobuf-dev protobuf-compiler \
+    # C++ Boost libraries
+    libboost-all-dev \
     # CLI utilities
     jq ripgrep fd-find less \
     unzip zip xz-utils zstd \
     wget tree file patch \
     openssh-client rsync \
-    # HDL/FPGA tools
-    yosys ghdl \
+    # HDL/FPGA tools (expanded for Ubuntu Noble — no Gowin)
+    yosys yosys-abc yosys-dev yosys-plugin-ghdl \
+    ghdl ghdl-common ghdl-tools \
+    nextpnr-ice40 nextpnr-ice40-chipdb \
+    nextpnr-ecp5 nextpnr-ecp5-chipdb \
+    nextpnr-generic \
     # Process/network tools
     procps lsof \
     iproute2 netcat-openbsd dnsutils \
@@ -49,5 +78,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && rustc --version \
  && chmod -R a+w $RUSTUP_HOME $CARGO_HOME
 
-# Switch back to non-root user
+# Replicate OpenClaw container settings
+ENV NODE_ENV=production
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
+
+# Switch to non-root user
 USER node

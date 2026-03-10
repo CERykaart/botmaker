@@ -7,12 +7,16 @@ const mockExec = vi.fn();
 const mockExecStart = vi.fn();
 const mockExecInspect = vi.fn();
 const mockGetContainer = vi.fn();
+const mockCreateContainer = vi.fn();
+const mockListContainers = vi.fn();
 const mockDemuxStream = vi.fn();
 
 vi.mock('dockerode', () => {
   return {
     default: vi.fn().mockImplementation(() => ({
       getContainer: mockGetContainer,
+      createContainer: mockCreateContainer,
+      listContainers: mockListContainers,
       modem: {
         demuxStream: mockDemuxStream,
       },
@@ -147,5 +151,128 @@ describe('DockerService.execCommand', () => {
 
     const result = await docker.execCommand('bob', ['cmd']);
     expect(result.exitCode).toBe(-1);
+  });
+});
+
+describe('DockerService.recreateContainer', () => {
+  let docker: DockerService;
+  const mockStop = vi.fn();
+  const mockRemove = vi.fn();
+  const mockInspect = vi.fn();
+
+  const fakeInspectResult = {
+    Config: {
+      Cmd: ['node', 'openclaw.mjs', 'gateway'],
+      Env: ['BOT_ID=123', 'PORT=19000', 'OPENCLAW_STATE_DIR=/app/botdata'],
+      ExposedPorts: { '8080/tcp': {} },
+      Labels: {
+        'botmaker.managed': 'true',
+        'botmaker.bot-id': 'uuid-123',
+        'botmaker.bot-hostname': 'bob',
+      },
+      Healthcheck: {
+        Test: ['CMD', 'curl', '-sf', 'http://localhost:8080/'],
+        Interval: 2_000_000_000,
+        Timeout: 3_000_000_000,
+        Retries: 30,
+        StartPeriod: 5_000_000_000,
+      },
+    },
+    HostConfig: {
+      Binds: [
+        '/data/secrets/bob:/run/secrets:ro',
+        '/data/bots/bob:/app/botdata:rw',
+        '/data/bots/bob/sandbox:/app/workspace:rw',
+      ],
+      PortBindings: { '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '19000' }] },
+      RestartPolicy: { Name: 'unless-stopped' },
+      NetworkMode: 'bm-internal',
+      ExtraHosts: null,
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    docker = new DockerService();
+
+    mockGetContainer.mockReturnValue({
+      inspect: mockInspect,
+      stop: mockStop,
+      remove: mockRemove,
+    });
+    mockInspect.mockResolvedValue(fakeInspectResult);
+    mockStop.mockResolvedValue(undefined);
+    mockRemove.mockResolvedValue(undefined);
+    mockCreateContainer.mockResolvedValue({ id: 'new-container-id-456' });
+  });
+
+  it('should inspect old container, remove it, and create new one with new image', async () => {
+    const newId = await docker.recreateContainer('bob', 'botmaker-env:v2');
+
+    expect(newId).toBe('new-container-id-456');
+
+    // Should have inspected and stopped the old container
+    expect(mockGetContainer).toHaveBeenCalledWith('botmaker-bob');
+    expect(mockStop).toHaveBeenCalledWith({ t: 10 });
+    expect(mockRemove).toHaveBeenCalled();
+
+    // Should create new container with new image but same config
+    expect(mockCreateContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'botmaker-bob',
+        Image: 'botmaker-env:v2',
+        Cmd: fakeInspectResult.Config.Cmd,
+        Env: fakeInspectResult.Config.Env,
+        ExposedPorts: fakeInspectResult.Config.ExposedPorts,
+        Labels: fakeInspectResult.Config.Labels,
+        Healthcheck: fakeInspectResult.Config.Healthcheck,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        HostConfig: expect.objectContaining({
+          Binds: fakeInspectResult.HostConfig.Binds,
+          PortBindings: fakeInspectResult.HostConfig.PortBindings,
+          RestartPolicy: fakeInspectResult.HostConfig.RestartPolicy,
+          NetworkMode: 'bm-internal',
+        }),
+      }),
+    );
+  });
+
+  it('should handle container already stopped (304)', async () => {
+    mockStop.mockRejectedValue({ statusCode: 304 });
+
+    const newId = await docker.recreateContainer('bob', 'botmaker-env:v2');
+
+    expect(newId).toBe('new-container-id-456');
+    expect(mockRemove).toHaveBeenCalled();
+    expect(mockCreateContainer).toHaveBeenCalled();
+  });
+
+  it('should preserve ExtraHosts when present', async () => {
+    mockInspect.mockResolvedValue({
+      ...fakeInspectResult,
+      HostConfig: {
+        ...fakeInspectResult.HostConfig,
+        ExtraHosts: ['host.docker.internal:host-gateway'],
+      },
+    });
+
+    await docker.recreateContainer('bob', 'botmaker-env:v2');
+
+    expect(mockCreateContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        HostConfig: expect.objectContaining({
+          ExtraHosts: ['host.docker.internal:host-gateway'],
+        }),
+      }),
+    );
+  });
+
+  it('should throw ContainerError when container not found', async () => {
+    mockGetContainer.mockReturnValue({
+      inspect: vi.fn().mockRejectedValue({ statusCode: 404, message: 'no such container' }),
+    });
+
+    await expect(docker.recreateContainer('nonexistent', 'img')).rejects.toThrow(ContainerError);
   });
 });
