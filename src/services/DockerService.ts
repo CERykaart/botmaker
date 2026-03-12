@@ -95,6 +95,7 @@ export class DockerService {
           StartPeriod: 5_000_000_000,  // 5s in nanoseconds
         },
         HostConfig: {
+          ShmSize: 1024 * 1024 * 1024,  // 1GB — Chromium needs larger /dev/shm
           Binds: [
             `${config.hostSecretsPath}:/run/secrets:ro`,
             `${config.hostWorkspacePath}:/app/botdata:rw`,
@@ -208,9 +209,10 @@ export class DockerService {
   }
 
   /**
-   * Recreates a container with a new image, preserving all config.
-   * Inspects the existing container, removes it, creates a new one with the same
-   * env/binds/ports/network/labels/healthcheck but the specified image.
+   * Recreates a container with a new image, preserving key runtime configuration.
+   * Inspects the existing container, removes it, and creates a new one that keeps
+   * the same command, environment, exposed ports, labels, healthcheck, and relevant
+   * host configuration (such as binds and networking), but uses the specified image.
    *
    * @param hostname - Hostname of the bot
    * @param newImage - Docker image to use for the new container
@@ -232,7 +234,7 @@ export class DockerService {
       const oldHostConfig = info.HostConfig as unknown as {
         Binds: string[]; PortBindings: Record<string, { HostIp: string; HostPort: string }[]>;
         RestartPolicy: { Name: string }; NetworkMode: string;
-        ExtraHosts: string[] | null;
+        ExtraHosts: string[] | null; ShmSize: number;
       };
 
       // Stop and remove the old container
@@ -244,7 +246,14 @@ export class DockerService {
           throw stopErr;
         }
       }
-      await container.remove();
+      try {
+        await container.remove();
+      } catch (removeErr) {
+        const dockerErr = removeErr as { statusCode?: number };
+        if (dockerErr.statusCode !== 404) {
+          throw removeErr;
+        }
+      }
 
       // Create new container with same config but new image
       const newContainer = await this.docker.createContainer({
@@ -256,6 +265,7 @@ export class DockerService {
         Labels: oldConfig.Labels,
         Healthcheck: oldConfig.Healthcheck,
         HostConfig: {
+          ShmSize: oldHostConfig.ShmSize || 1024 * 1024 * 1024,
           Binds: oldHostConfig.Binds,
           PortBindings: oldHostConfig.PortBindings,
           RestartPolicy: oldHostConfig.RestartPolicy,

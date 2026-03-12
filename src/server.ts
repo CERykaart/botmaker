@@ -780,6 +780,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
       return { success: true, status: 'running', containerId: newContainerId, image: config.openclawImage };
     } catch (err) {
+      updateBot(bot.id, { status: 'stopped' });
       if (err instanceof ContainerError) {
         reply.code(500);
         return { error: `Failed to recreate container: ${err.message}` };
@@ -810,6 +811,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         updateBot(bot.id, { status: 'running' });
         results.push({ hostname: bot.hostname, success: true });
       } catch (err) {
+        updateBot(bot.id, { status: 'stopped' });
         const msg = err instanceof Error ? err.message : String(err);
         results.push({ hostname: bot.hostname, success: false, error: msg });
       }

@@ -66,7 +66,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Process/network tools
     procps lsof \
     iproute2 netcat-openbsd dnsutils \
+    # Browser automation (Playwright/Chromium dependencies)
+    libnss3 libnspr4 libatk-bridge2.0-0 libdrm2 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 \
+    libasound2t64 libatk1.0-0t64 libcups2t64 libpango-1.0-0 \
+    libcairo2 libatspi2.0-0 libx11-xcb1 libxfixes3 \
+    fonts-liberation fonts-noto-color-emoji \
  && rm -rf /var/lib/apt/lists/*
+
+# Install Playwright globally and download Chromium browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN mkdir -p /opt/playwright-browsers \
+ && npm install -g playwright \
+ && npx playwright install chromium \
+ && chmod -R a+rX /opt/playwright-browsers
 
 # Install Rust toolchain via rustup (APT packages are severely outdated)
 ENV RUSTUP_HOME=/usr/local/rustup \
