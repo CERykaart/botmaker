@@ -763,6 +763,63 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
   });
 
+  // Recreate bot container with current image (e.g., after botenv rebuild)
+  server.post<{ Params: { hostname: string } }>('/api/bots/:hostname/recreate', async (request, reply) => {
+    const bot = getBotByHostname(request.params.hostname);
+
+    if (!bot) {
+      reply.code(404);
+      return { error: 'Bot not found' };
+    }
+
+    try {
+      const newContainerId = await docker.recreateContainer(bot.hostname, config.openclawImage);
+      updateBot(bot.id, { container_id: newContainerId, image_version: config.openclawImage });
+      await docker.startContainer(bot.hostname);
+      updateBot(bot.id, { status: 'running' });
+
+      return { success: true, status: 'running', containerId: newContainerId, image: config.openclawImage };
+    } catch (err) {
+      updateBot(bot.id, { status: 'stopped' });
+      if (err instanceof ContainerError) {
+        reply.code(500);
+        return { error: `Failed to recreate container: ${err.message}` };
+      }
+      throw err;
+    }
+  });
+
+  // Recreate all bot containers with current image
+  server.post('/api/admin/recreate-all', async () => {
+    const bots = listBots();
+    const managedContainers = await docker.listManagedContainers();
+    const containerHostnames = new Set(managedContainers.map(c => c.hostname));
+
+    const results: { hostname: string; success: boolean; error?: string }[] = [];
+
+    for (const bot of bots) {
+      // Only recreate bots that have an existing container
+      if (!containerHostnames.has(bot.hostname)) {
+        results.push({ hostname: bot.hostname, success: false, error: 'No container found' });
+        continue;
+      }
+
+      try {
+        const newContainerId = await docker.recreateContainer(bot.hostname, config.openclawImage);
+        updateBot(bot.id, { container_id: newContainerId, image_version: config.openclawImage });
+        await docker.startContainer(bot.hostname);
+        updateBot(bot.id, { status: 'running' });
+        results.push({ hostname: bot.hostname, success: true });
+      } catch (err) {
+        updateBot(bot.id, { status: 'stopped' });
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push({ hostname: bot.hostname, success: false, error: msg });
+      }
+    }
+
+    return { image: config.openclawImage, results };
+  });
+
   // Approve a Telegram pairing code
   server.post<{ Params: { hostname: string }; Body: { code?: string } }>(
     '/api/bots/:hostname/pair',

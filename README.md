@@ -203,7 +203,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:7100/api/logout
 | `DATA_DIR` | ./data | Database and bot workspaces |
 | `SECRETS_DIR` | ./secrets | Per-bot secret storage |
 | `BOTENV_IMAGE` | botmaker-env:latest | Bot container image (built from botenv) |
-| `OPENCLAW_BASE_IMAGE` | ghcr.io/openclaw/openclaw:latest | Base image for botenv |
+| `OPENCLAW_BASE_IMAGE` | ghcr.io/openclaw/openclaw:latest | OpenClaw source image (multi-stage copy into Ubuntu Noble) |
 | `BOT_PORT_START` | 19000 | Starting port for bot containers |
 | `SESSION_EXPIRY_MS` | 86400000 | Session expiry in milliseconds (default 24h) |
 
@@ -228,6 +228,7 @@ All `/api/*` endpoints require authentication via Bearer token (see Authenticati
 | DELETE | `/api/bots/:hostname` | Delete bot and cleanup resources |
 | POST | `/api/bots/:hostname/start` | Start bot container |
 | POST | `/api/bots/:hostname/stop` | Stop bot container |
+| POST | `/api/bots/:hostname/recreate` | Recreate container with current botenv image |
 
 ### Monitoring & Admin
 
@@ -237,6 +238,7 @@ All `/api/*` endpoints require authentication via Bearer token (see Authenticati
 | GET | `/api/stats` | Container resource stats (CPU, memory) |
 | GET | `/api/admin/orphans` | Preview orphaned resources |
 | POST | `/api/admin/cleanup` | Clean orphaned containers/workspaces/secrets |
+| POST | `/api/admin/recreate-all` | Recreate all bot containers with current botenv image |
 
 ## Project Structure
 

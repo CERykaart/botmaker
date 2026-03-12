@@ -95,6 +95,7 @@ export class DockerService {
           StartPeriod: 5_000_000_000,  // 5s in nanoseconds
         },
         HostConfig: {
+          ShmSize: 1024 * 1024 * 1024,  // 1GB — Chromium needs larger /dev/shm
           Binds: [
             `${config.hostSecretsPath}:/run/secrets:ro`,
             `${config.hostWorkspacePath}:/app/botdata:rw`,
@@ -202,6 +203,78 @@ export class DockerService {
       }
 
       await container.remove();
+    } catch (err) {
+      throw wrapDockerError(err, hostname);
+    }
+  }
+
+  /**
+   * Recreates a container with a new image, preserving key runtime configuration.
+   * Inspects the existing container, removes it, and creates a new one that keeps
+   * the same command, environment, exposed ports, labels, healthcheck, and relevant
+   * host configuration (such as binds and networking), but uses the specified image.
+   *
+   * @param hostname - Hostname of the bot
+   * @param newImage - Docker image to use for the new container
+   * @returns New container ID
+   */
+  async recreateContainer(hostname: string, newImage: string): Promise<string> {
+    const containerName = `botmaker-${hostname}`;
+
+    try {
+      const container = this.docker.getContainer(containerName);
+      const info = await container.inspect();
+
+      // Extract config from existing container (cast via unknown for dockerode types)
+      const oldConfig = info.Config as unknown as {
+        Cmd: string[]; Env: string[];
+        ExposedPorts: Record<string, Record<string, never>>; Labels: Record<string, string>;
+        Healthcheck: Docker.HealthConfig;
+      };
+      const oldHostConfig = info.HostConfig as unknown as {
+        Binds: string[]; PortBindings: Record<string, { HostIp: string; HostPort: string }[]>;
+        RestartPolicy: { Name: string }; NetworkMode: string;
+        ExtraHosts: string[] | null; ShmSize: number;
+      };
+
+      // Stop and remove the old container
+      try {
+        await container.stop({ t: 10 });
+      } catch (stopErr) {
+        const dockerErr = stopErr as { statusCode?: number };
+        if (dockerErr.statusCode !== 304 && dockerErr.statusCode !== 404) {
+          throw stopErr;
+        }
+      }
+      try {
+        await container.remove();
+      } catch (removeErr) {
+        const dockerErr = removeErr as { statusCode?: number };
+        if (dockerErr.statusCode !== 404) {
+          throw removeErr;
+        }
+      }
+
+      // Create new container with same config but new image
+      const newContainer = await this.docker.createContainer({
+        name: containerName,
+        Image: newImage,
+        Cmd: oldConfig.Cmd,
+        Env: oldConfig.Env,
+        ExposedPorts: oldConfig.ExposedPorts,
+        Labels: oldConfig.Labels,
+        Healthcheck: oldConfig.Healthcheck,
+        HostConfig: {
+          ShmSize: oldHostConfig.ShmSize || 1024 * 1024 * 1024,
+          Binds: oldHostConfig.Binds,
+          PortBindings: oldHostConfig.PortBindings,
+          RestartPolicy: oldHostConfig.RestartPolicy,
+          NetworkMode: oldHostConfig.NetworkMode,
+          ...(oldHostConfig.ExtraHosts?.length ? { ExtraHosts: oldHostConfig.ExtraHosts } : {}),
+        }
+      });
+
+      return newContainer.id;
     } catch (err) {
       throw wrapDockerError(err, hostname);
     }
